@@ -1,0 +1,119 @@
+#include <ros/ros.h>
+#include <nav_msgs/OccupancyGrid.h>
+#include <nav_msgs/Path.h>
+#include <geometry_msgs/PoseStamped.h>
+#include <queue>
+#include <vector>
+#include <cmath>
+
+class Point {
+public:
+    int x, y;
+    double cost, heuristic;
+    Point* prev;
+
+    Point(int x, int y, double cost = 0, double heuristic = 0, Point* prev = nullptr)
+        : x(x), y(y), cost(cost), heuristic(heuristic), prev(prev) {}
+};
+
+using Grid = std::vector<std::vector<int>>;
+using Path = std::vector<Point*>;
+
+Path findPath(Point* start, Point* end, const Grid& grid, int width, int height) {
+    Path path;
+    auto comp =  { return a->cost + a->heuristic > b->cost + b->heuristic; };
+    std::priority_queue<Point*, std::vector<Point*>, decltype(comp)> open(comp);
+
+    start->cost = 0;
+    start->heuristic = std::hypot(end->x - start->x, end->y - start->y);
+    open.push(start);
+
+    while (!open.empty()) {
+        Point* current = open.top();
+        open.pop();
+
+        if (current->x == end->x && current->y == end->y) {
+            for (Point* p = current; p != nullptr; p = p->prev) {
+                path.push_back(p);
+            }
+            break;
+        }
+
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                if (dx == 0 && dy == 0) continue;
+
+                int nx = current->x + dx;
+                int ny = current->y + dy;
+
+                if (nx >= 0 && nx < width && ny >= 0 && ny < height && grid[ny][nx] == 0) {
+                    double new_cost = current->cost + std::hypot(dx, dy);
+                    double heuristic = std::hypot(end->x - nx, end->y - ny);
+
+                    bool found = false;
+                    for (Point* point : open) {
+                        if (point->x == nx && point->y == ny) {
+                            found = true;
+                            if (point->cost > new_cost) {
+                                point->cost = new_cost;
+                                point->prev = current;
+                            }
+                            break;
+                        }
+                    }
+
+                    if (!found) {
+                        open.push(new Point(nx, ny, new_cost, heuristic, current));
+                    }
+                }
+            }
+        }
+    }
+
+    return path;
+}
+
+void handleMap(const nav_msgs::OccupancyGrid::ConstPtr& msg) {
+    int width = msg->info.width;
+    int height = msg->info.height;
+    double resolution = msg->info.resolution;
+
+    Grid grid(height, std::vector<int>(width));
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            grid[y][x] = msg->data[y * width + x];
+        }
+    }
+
+    Point* start = new Point(10, 10);
+    Point* end = new Point(50, 50);
+
+    Path path = findPath(start, end, grid, width, height);
+
+    ros::NodeHandle nh;
+    ros::Publisher pub = nh.advertise<nav_msgs::Path>("path", 1);
+    nav_msgs::Path msg_path;
+    msg_path.header.frame_id = "map";
+
+    for (auto it = path.rbegin(); it != path.rend(); ++it) {
+        geometry_msgs::PoseStamped pose;
+        pose.pose.position.x = (*it)->x * resolution;
+        pose.pose.position.y = (*it)->y * resolution;
+        pose.pose.orientation.w = 1.0;
+        msg_path.poses.push_back(pose);
+    }
+
+    pub.publish(msg_path);
+}
+
+int main(int argc, char** argv) {
+    ros::init(argc, argv, "path_planner_node");
+    ros::NodeHandle nh;
+
+    ros::Subscriber sub = nh.subscribe("map", 1, handleMap);
+
+    ros::spin();
+
+    return 0;
+}
